@@ -906,6 +906,11 @@ html .col.aw-wide { max-width: 1000px; }
 @media (max-width: 600px) { .gv.aw-fig svg text { font-size: 19px; } .gv.aw-fig { padding: 10px 6px; } }
 #blk-ss .gv.aw-fig svg { max-width: 480px; }
 
+/* the Sampling Lab's two number inputs */
+.aw-lab-in { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 10px 0 4px; }
+.aw-lab-f { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+.aw-lab-f input { width: 6.5em; font: inherit; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface); color: var(--ink); }
+
 </style>
 </head>
 <body>
@@ -2996,6 +3001,50 @@ function ssHTML() {
   return h + ask('Each step from 125 to 500 to 2,000 multiplies `n` by 4, and the standard error halves each time, from 0.0438 to 0.0219 to 0.0110.');
 }
 
+/* ---------------- the Sampling Lab: a StatKey-style sampler for a proportion (Samuel, 2026-11-12: "Is there a reason we
+   can't simply do what statkey does in our interactive?"). Choose p and n, draw 1, 10, 100 or 1,000 samples at a time;
+   the histogram of every p-hat drawn so far builds up, with its mean, its standard deviation, the formula's standard
+   error, and how many land within 1.96 standard errors of p. Unit 9 Problem Set Problem 3 runs here. ---------------- */
+var LAB_MAX = 10000;
+function labClamp(v, lo, hi, d) { v = parseFloat(String(v).replace(',', '.')); return isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; }
+function labState() { var t = S.tab; if (!t.lab) t.lab = { p: 0.5, n: 100, vals: [] }; return t.lab; }
+function labSE(L) { return Math.sqrt(L.p * (1 - L.p) / L.n); }
+function labDraw(k, r) {
+  var L = labState();
+  var pIn = document.getElementById('lab-p'), nIn = document.getElementById('lab-n');
+  var p = Math.round(labClamp(pIn ? pIn.value : L.p, 0.01, 0.99, L.p) * 1000) / 1000, n = Math.round(labClamp(nIn ? nIn.value : L.n, 1, 5000, L.n));
+  if (p !== L.p || n !== L.n) { L.p = p; L.n = n; L.vals = []; }
+  for (var j = 0; j < k && L.vals.length < LAB_MAX; j++) L.vals.push(awSurvey(n, p, r) / n);
+  L.last = L.vals[L.vals.length - 1];
+  save(); redraw('lab');
+  var fig = document.getElementById('fig-lab'); if (fig && fig.scrollIntoView) fig.scrollIntoView({ block: 'nearest' });
+}
+onAct('lab-draw', function (el) { labDraw(+el.dataset.k, AW_RNG); var b = document.getElementById('btn-lab-' + el.dataset.k); if (b) b.focus({ preventScroll: true }); });
+onAct('lab-reset', function () { var L = labState(); L.vals = []; L.last = undefined; save(); redraw('lab'); });
+function labSummary(L) {
+  var st = L.vals.length > 1 ? awStats(L.vals) : null, se = labSE(L), m = 1.96 * se;
+  var within = L.vals.filter(function (v) { return Math.abs(v - L.p) <= m + 1e-12; }).length;
+  return { st: st, se: se, moe: m, within: within };
+}
+function labHTML() {
+  var L = labState(), h = '';
+  h += '<div class="aw-lab-in"><label class="aw-lab-f">' + P('Population proportion `p`') + ' <input type="number" id="lab-p" min="0.01" max="0.99" step="0.01" value="' + L.p + '" inputmode="decimal"></label>' +
+    '<label class="aw-lab-f">' + P('Sample size `n`') + ' <input type="number" id="lab-n" min="1" max="5000" step="1" value="' + L.n + '" inputmode="numeric"></label></div>' +
+    '<p class="aw-read aw-quiet">' + P('Type a proportion and a sample size, then press a Draw button. Each press adds that many new random samples to the histogram. Changing `p` or `n` starts a new set.') + '</p>' +
+    '<div class="aw-ctl">' + [1, 10, 100, 1000].map(function (k) { return '<button type="button" class="btn sm" data-act="lab-draw" data-k="' + k + '" id="btn-lab-' + k + '">Draw ' + commas(k) + (k === 1 ? ' sample' : ' samples') + '</button>'; }).join('') +
+    '<button type="button" class="btn sm" data-act="lab-reset" id="btn-lab-reset">Start over</button></div>';
+  if (!L.vals.length) return h + '<p class="aw-read aw-quiet">' + P('No samples drawn yet.') + '</p>';
+  var s = labSummary(L), half = Math.max(5 * s.se, 0.02), x0 = Math.max(0, L.p - half), x1 = Math.min(1, L.p + half);
+  var bw = Math.max(niceDown((x1 - x0) / 40), 1 / L.n), b = awBins(L.vals, x0, x1, bw, 0);
+  var tk = []; var st = niceUp((x1 - x0) / 5); for (var v = Math.ceil(x0 / st) * st; v <= x1 + 1e-9; v += st) tk.push(Math.round(v * 1e6) / 1e6);
+  h += figBox(awHist({ bins: b, x: [x0, x1], xt: tk, xfmt: function (v) { return fmtNum(v, st < 0.01 ? 3 : 2); }, xlab: 'sample proportion ' + PH_SVG, ylab: 'number of samples', h: 230,
+    aria: 'Histogram of ' + L.vals.length + ' sample proportions from samples of ' + L.n + ' with p = ' + L.p + (s.st ? ', standard deviation ' + f4(s.st.sd) : '') + '.' }), 'fig-lab');
+  h += '<p class="aw-read">' + P('Samples drawn: ' + commas(L.vals.length) + (L.vals.length >= LAB_MAX ? ' (the most this lab keeps)' : '') + '. The last sample gave `' + PH + ' = ' + f3(L.last) + '`.') + '</p>';
+  if (s.st) h += '<p class="aw-read">' + P('Mean of the values of `' + PH + '`: `' + f3(s.st.mean) + '`. Standard deviation: `' + f4(s.st.sd) + '`. The formula `√(p(1 − p) / n)` gives a standard error of `' + f4(s.se) + '`.') + '</p>';
+  h += '<p class="aw-read">' + P('Within 1.96 standard errors of `p`, from ' + f3(L.p - s.moe) + ' to ' + f3(L.p + s.moe) + ': ' + commas(s.within) + ' of ' + commas(L.vals.length) + ' samples.' + outNote(b, 'samples')) + '</p>';
+  return h;
+}
+
 /* ---------------- Part 1, continued: one sample against 1,000 sample means, the sample's mean carried across ---------------- */
 var HT = { mu: 170, sigma: 8, n: 100, x: [140, 200] };
 function htOne(r) { var v = []; for (var i = 0; i < HT.n; i++) v.push(HT.mu + HT.sigma * awNorm(r)); var st = awStats(v), b = awBins(v, HT.x[0], HT.x[1], 2, 0); return { cnt: b.cnt, lo: b.lo, hi: b.hi, mean: st.mean, sd: st.sd }; }
@@ -3207,6 +3256,9 @@ function page() {
     '<div id="sec-sf"></div>' + sfHTML() + col(hb('sf', sfQHTML)) +
     prose('Four Times the Sample Size', ['A bigger survey should land closer to `p`. The formula says how much closer.']) +
     col(hb('ratio', ratioHTML) + hb('ss', ssHTML)) +
+    '<div id="sec-lab"></div>' +
+    prose('The Sampling Lab', ['The surveys above used one setting, `p = 0.60` and `n = 500`. This lab runs the same simulation for any population proportion and sample size you choose, so you can build a sampling distribution yourself. Problem 3 of the Unit 9 Problem Set uses it.']) +
+    col(hb('lab', labHTML)) +
     '<div id="sec-two"></div>' +
     prose('One Sample Is Not the Sampling Distribution', ['Adult heights in a population are normal, with population mean `μ = 170` cm and standard deviation `σ = 8` cm. Two different histograms can be drawn from this population, and they are easy to confuse.',
       'Press the left button to draw one sample of 100 people. The left histogram counts those 100 people, and the line marks their mean. Then press the right button. It draws 1,000 samples of 100 people, takes the mean of each, and plots the 1,000 means. Your sample from the left is one of those 1,000, and its mean is marked on the right too. Both charts use the same centimeter scale.']) +
@@ -3307,6 +3359,17 @@ selfcheck.add('a seeded click on Run draws the histogram and its readout matches
     var ok = run && run.n === 50 && bars > 5 && rd.indexOf(want) >= 0;
     return ok ? true : { ok: false, detail: 'n ' + (run && run.n) + ', bars ' + bars + ', readout lacks ' + want };
   } finally { __RR.setRng(null); selfcheck.restore(snap, ['clt']); }
+});
+
+selfcheck.add('Sampling Lab: p = 0.47, n = 1,200, 1,000 seeded samples give SD near 0.0144 and about 95% within 1.96 SE', function () {
+  var snap = selfcheck.snapshot();
+  try {
+    S.tab.lab = { p: 0.47, n: 1200, vals: [] }; redraw('lab');
+    labDraw(1000, awSeeded(81));
+    var L = S.tab.lab, sm = labSummary(L), t = (document.getElementById('blk-lab') || {}).textContent || '';
+    var ok = L.vals.length === 1000 && scNear(sm.st.sd, 0.0130, 0.0158) && scNear(sm.within, 925, 975) && t.indexOf(fmtNum(sm.st.sd, 4)) >= 0 && t.indexOf('0.0144') >= 0;
+    return ok ? true : { ok: false, detail: 'n ' + L.vals.length + ', sd ' + sm.st.sd + ', within ' + sm.within };
+  } finally { selfcheck.restore(snap, ['lab']); }
 });
 
 selfcheck.add('exam rehearsal choices show the four options in the problem-set order', function () {
